@@ -1,0 +1,235 @@
+import requests
+import mysql.connector
+import json
+import configparser
+from datetime import datetime
+
+parser = configparser.ConfigParser()
+parser.read('config.txt')
+host = parser.get('livedb','host')
+user = parser.get('livedb','user')
+passwd = parser.get('livedb','passwd')
+database = parser.get('livedb','database')
+# print("works")
+
+mydb = mysql.connector.connect(
+    host=host,
+    user=user,
+    passwd=passwd,
+    database=database
+)
+mycursor = mydb.cursor()
+
+# include eventsdb entries to speakerdb.
+confirmed_event_speakers = "INSERT INTO speakers (person_id) (SELECT p.person_id FROM customer_data.people_events as p left JOIN customer_data.speakers as s ON p.person_id = s.person_id WHERE p.speaker_status = 'Confirmed' AND s.person_id is Null)"
+mycursor.execute(confirmed_event_speakers)
+mydb.commit()
+# print(all_confirmed_event_speakers)
+
+
+def fix_dates_format(date):
+    # fix dates called from API
+    if date:
+        lastmodified = date.split('T')
+        date_string = lastmodified[0]
+        datetimes = datetime.strptime(date_string, '%Y-%m-%d')
+        return datetimes
+
+
+
+    # COMPANY
+    # add info for company in warehouse.
+def existing_company(hubspot_id):
+    company_in_warehouse = "SELECT ID FROM org WHERE hubSpotID = %s"
+    mycursor.execute(company_in_warehouse, (hubspot_id, ))
+    company = mycursor.fetchall()
+    # print(company[0])
+    if not company:
+        new_company = "INSERT INTO org (name, registeredName,male_founders, female_founders, city, uk_region, website, domain, company_type, tech_sector, CRN, hubSpotID) VALUES (%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s,%s)"
+        companyDetails = (hubspot_company_information['name'],
+                  hubspot_company_information['registered_name'], hubspot_company_information['male_founders'], hubspot_company_information['female_founders'],
+                  hubspot_company_information['city'], hubspot_company_information['uk_region'],
+                  hubspot_company_information['website'], hubspot_company_information['domain'], hubspot_company_information['company_type'],
+                  hubspot_company_information['tech_sector'], hubspot_company_information['company_number'], hubspot_company_information['hs_object_id'])
+        mycursor.execute(new_company, companyDetails)
+        mydb.commit()
+    else:
+        company_info = "UPDATE org set name=%s, registeredName=%s, male_founders=%s, female_founders=%s, city=%s, uk_region=%s, website=%s, domain=%s, company_type=%s, tech_sector=%s, CRN=%s, hubSpotID = %s WHERE ID =%s"
+        hubspot_company = (hubspot_company_information['name'],
+                          hubspot_company_information['registered_name'], hubspot_company_information['male_founders'], hubspot_company_information['female_founders'],
+                          hubspot_company_information['city'], hubspot_company_information['uk_region'],
+                          hubspot_company_information['website'], hubspot_company_information['domain'], hubspot_company_information['company_type'],
+                          hubspot_company_information['tech_sector'], hubspot_company_information['company_number'], hubspot_company_information['hs_object_id'], company[0][0])
+        mycursor.execute(company_info, hubspot_company)
+        mydb.commit()
+
+
+
+
+# # calls all records from person that have an email and haven't been updated in the last month
+person_info = "SELECT ID, email FROM person WHERE email != ''AND last_contacted_hubspot < now() - interval 1 month or last_contacted_hubspot is null"
+mycursor.execute(person_info)
+all_records = mycursor.fetchall()
+# print(all_records)
+
+# api call to hubspot gathering missing person information for wh
+for i in all_records:
+    email = i[1]
+    person_id = i[0]
+    url = "https://api.hubapi.com/crm/v3/objects/contacts/search"
+    querystring = {"hapikey": parser.get('hubspot', 'apikey')}
+    payload = '{"filters":[{"propertyName": "email","operator": "EQ", "value": "' + email + '"}],"properties":[ "email", "firstname","lastname", "gender", "linkedin_person_","d_i_area_of_expertise", "d_i_area_of_interest", "lastmodifieddate", "notes_last_updated","jobtitle","twitterhandle", "expert_subject_area_tags", "other_topics", "interested_in", "diversity_questionnaire_consent", "speakers_database_form_submitted", "hubspot_owner_id", "record_source", "year_of_birth","pronouns","pronouns_freetext","gender_d_i_survey_field_","gender_freetext","sexual_orientation","sexual_orientation_freetext","country_of_origin","nationality","ethnicity","ethnicity_freetext","disability","neurodivergent","religion_or_belief","religion_freetext","school_type_between_11_16_years","school_type_between_11_16_years_freetext","parent_guardian_highest_level_of_qualifications","parent_guardian_highest_level_of_qualifications_freetext","d_i_form_privacy_version","speakers_database_date_registered"]}'
+    headers = {
+        'accept': "application/json",
+        'content-type': "application/json"
+    }
+    response = requests.request("POST", url, data=payload, headers=headers, params=querystring)
+    jsonObj = json.loads(response.text)
+    results = jsonObj['results']
+    if not results:
+        pass
+    else:
+        # print(results)
+        hubspot_person_information = results[0]['properties']
+    # api call to hubspot gathering information for associated company
+        hubspot_id = results[0]['id']
+        url2 = "https://api.hubapi.com/crm/v3/objects/contacts/" + hubspot_id + "/associations/company"
+        querystring2 = {"limit": "500", "hapikey": parser.get('hubspot', 'apikey')}
+        headers2 = {'accept': 'application/json'}
+        response2 = requests.request("GET", url2, headers=headers2, params=querystring2)
+        jsonObj2 = json.loads(response2.text)
+        results2 = jsonObj2['results']
+        # print(results2)
+
+        # get api call to collect information for that company
+        if not results2:
+            pass
+        else:
+            hubspot_companyID = results2[0]['id']
+            # print(companyID)
+            url3 = "https://api.hubapi.com/crm/v3/objects/companies/search"
+            querystring3 = {"hapikey": parser.get('hubspot', 'apikey')}
+            payload3 = '{"filters":[{"propertyName": "hs_object_id","operator": "EQ", "value": "'+hubspot_companyID+'"}], "properties": ["name","company_number","date_incorporated","registered_name","male_founders","female_founders","city","uk_region","website","domain","company_type","tech_sector"]}'
+            headers3 = {
+                'accept': "application/json",
+                'content-type': "application/json"
+            }
+            response3 = requests.request("POST", url3, data=payload3, headers=headers3, params=querystring3)
+            jsonObj3 = json.loads(response3.text)
+            results3 = jsonObj3['results']
+            # print(results3)
+            hubspot_company_information = results3[0]['properties']
+            existing_company(hubspot_company_information['hs_object_id'])
+        lastupdate = fix_dates_format(hubspot_person_information['lastmodifieddate'])
+
+        # add info for people in warehouse
+
+        person_info = "UPDATE person set first_name=%s, last_name=%s, hubspot_id=%s, hubspot_associated_company_id=%s, job_title_hubspot=%s, linkedin_hubspot=%s, twitter_hubspot=%s, contact_owner_hubspot=%s, gender_hubspot=%s, last_contacted_hubspot=%s, source_hubspot=%s where email=%s"
+        hubspot_person = (hubspot_person_information['firstname'], hubspot_person_information['lastname'], hubspot_person_information['hs_object_id'], hubspot_companyID, hubspot_person_information['jobtitle'],hubspot_person_information['linkedin_person_'], hubspot_person_information['twitterhandle'], hubspot_person_information['hubspot_owner_id'], hubspot_person_information['gender'], lastupdate, hubspot_person_information['record_source'], hubspot_person_information['email'])
+        mycursor.execute(person_info, hubspot_person)
+        mydb.commit()
+
+
+        # add info for speaker, speaker form and speaker d'n'i in warehouse
+        # SPEAKER
+        if not hubspot_person_information['speakers_database_form_submitted'] or not hubspot_person_information['speakers_database_date_registered']:
+            pass
+        else:
+            new_company_in_warehouse = "SELECT ID FROM org WHERE hubSpotID = %s"
+            mycursor.execute(new_company_in_warehouse, (hubspot_company_information['hs_object_id'], ))
+            new_company = mycursor.fetchall()
+
+            speaker_in_warehouse = "SELECT id FROM speakers WHERE person_id = %s"
+            mycursor.execute(speaker_in_warehouse, (person_id, ))
+            speaker = mycursor.fetchall()
+            # print(company[0][0])
+            if not speaker:
+                new_speaker = "INSERT INTO speakers (person_id, companyid, last_reviewed, DnI_interests, DnI_expertise) VALUES (%s, %s, %s,%s,%s)"
+                speakerDetails = (person_id, new_company[0][0], lastupdate, hubspot_person_information['d_i_area_of_interest'], hubspot_person_information['d_i_area_of_expertise'])
+                mycursor.execute(new_speaker, speakerDetails)
+                mydb.commit()
+            else:
+                speaker_info = "UPDATE speakers set companyid = %s, last_reviewed=%s, DnI_interests=%s, DnI_expertise=%s WHERE person_id =%s"
+                hubspot_speaker = (new_company[0][0], lastupdate, hubspot_person_information['d_i_area_of_interest'], hubspot_person_information['d_i_area_of_expertise'], person_id)
+                mycursor.execute(speaker_info, hubspot_speaker)
+                mydb.commit()
+
+
+            # SPEAKERFORM
+            if not hubspot_person_information['speakers_database_form_submitted']:
+                pass
+            else:
+                speakerForm_in_warehouse = "SELECT id FROM speakers_form WHERE person_id = %s"
+                mycursor.execute(speakerForm_in_warehouse, (person_id, ))
+                speakerForm = mycursor.fetchall()
+                if not speakerForm:
+                    new_speakerForm = "INSERT INTO speakers_form (person_id, org_id, areas, other_areas, interestedIn, diversity_consent, submitted_date) VALUES (%s, %s, %s,%s,%s, %s,%s)"
+                    speakerFormDetails = (person_id, new_company[0][0], hubspot_person_information['expert_subject_area_tags'], hubspot_person_information['other_topics'], hubspot_person_information['interested_in'], hubspot_person_information['diversity_questionnaire_consent'], fix_dates_format(hubspot_person_information['speakers_database_date_registered']))
+                    mycursor.execute(new_speakerForm, speakerFormDetails)
+                    mydb.commit()
+                else:
+                    speakerForm_info = "UPDATE speakers_form set org_id = %s, areas=%s, other_areas=%s, interestedIn=%s, diversity_consent=%s, submitted_date=%s WHERE person_id =%s"
+                    hubspot_speakerForm = (new_company[0][0], hubspot_person_information['expert_subject_area_tags'], hubspot_person_information['other_topics'], hubspot_person_information['interested_in'], hubspot_person_information['diversity_questionnaire_consent'], fix_dates_format(hubspot_person_information['speakers_database_date_registered']), person_id)
+                    mycursor.execute(speakerForm_info, hubspot_speakerForm)
+                    mydb.commit()
+
+            # SPEAKERDNI
+            if not hubspot_person_information['d_i_form_privacy_version']:
+                pass
+            else:
+                speakerDNI_in_warehouse = "SELECT id FROM speakersD_n_I WHERE person_id = %s"
+                mycursor.execute(speakerDNI_in_warehouse, (person_id,))
+                speakerDNI = mycursor.fetchall()
+                if not speakerDNI:
+                    new_speakerDNI = "INSERT INTO speakersD_n_I (person_id, yob, pronoun, pronoun_other, identify, identify_other, sexuality, sexuality_other, country_origin, nationality, ethnicity, ethnicity_other, disability, neurodivergent, religion, religion_other, school_type, school_type_other, parent_qualification, parent_qualification_other, date_submitted) VALUES (%s, %s,%s,%s, %s,%s, %s, %s, %s, %s, %s,%s,%s, %s,%s,%s, %s,%s, %s, %s,%s)"
+                    speakerDNIDetails = (
+                        person_id, hubspot_person_information['year_of_birth'], hubspot_person_information['pronouns'],
+                        hubspot_person_information['pronouns_freetext'],
+                        hubspot_person_information['gender_d_i_survey_field_'],
+                        hubspot_person_information['gender_freetext'], hubspot_person_information['sexual_orientation'],
+                        hubspot_person_information['sexual_orientation_freetext'],
+                        hubspot_person_information['country_of_origin'], hubspot_person_information['nationality'],
+                        hubspot_person_information['ethnicity'], hubspot_person_information['ethnicity_freetext'],
+                        hubspot_person_information['disability'],
+                        hubspot_person_information['neurodivergent'], hubspot_person_information['religion_or_belief'],
+                        hubspot_person_information['religion_freetext'],
+                        hubspot_person_information['school_type_between_11_16_years'],
+                        hubspot_person_information['school_type_between_11_16_years_freetext'],
+                        hubspot_person_information['parent_guardian_highest_level_of_qualifications'],
+                        hubspot_person_information['parent_guardian_highest_level_of_qualifications_freetext'],
+                        fix_dates_format(hubspot_person_information['d_i_form_privacy_version']))
+                    mycursor.execute(new_speakerDNI, speakerDNIDetails)
+                    mydb.commit()
+                else:
+                    speakerDNI_info = "UPDATE speakersD_n_I set yob=%s, pronoun=%s, pronoun_other=%s, identify=%s, identify_other=%s, sexuality=%s, sexuality_other=%s, country_origin=%s, nationality=%s, ethnicity=%s, ethnicity_other=%s, disability=%s, neurodivergent=%s, religion=%s, religion_other=%s, school_type=%s, school_type_other=%s, parent_qualification=%s, parent_qualification_other=%s, date_submitted=%s WHERE person_id =%s"
+                    hubspot_speakerDNI = (
+                        hubspot_person_information['year_of_birth'], hubspot_person_information['pronouns'],
+                        hubspot_person_information['pronouns_freetext'],
+                        hubspot_person_information['gender_d_i_survey_field_'],
+                        hubspot_person_information['gender_freetext'], hubspot_person_information['sexual_orientation'],
+                        hubspot_person_information['sexual_orientation_freetext'],
+                        hubspot_person_information['country_of_origin'], hubspot_person_information['nationality'],
+                        hubspot_person_information['ethnicity'], hubspot_person_information['ethnicity_freetext'],
+                        hubspot_person_information['disability'],
+                        hubspot_person_information['neurodivergent'], hubspot_person_information['religion_or_belief'],
+                        hubspot_person_information['religion_freetext'],
+                        hubspot_person_information['school_type_between_11_16_years'],
+                        hubspot_person_information['school_type_between_11_16_years_freetext'],
+                        hubspot_person_information['parent_guardian_highest_level_of_qualifications'],
+                        hubspot_person_information['parent_guardian_highest_level_of_qualifications_freetext'],
+                        fix_dates_format(hubspot_person_information['d_i_form_privacy_version']), person_id)
+                    mycursor.execute(speakerDNI_info, hubspot_speakerDNI)
+                    mydb.commit()
+
+            # Push to Hubspot speaker DB using confirmed_speakers
+            url4 = "https://api.hubapi.com/crm/v3/objects/contacts/"+hubspot_id
+            querystring4 = {"hapikey": parser.get('hubspot', 'apikey')}
+            payload4 = '{"properties": {"in_speaker_database": "true"}}'
+            headers4 = {
+                'accept': "application/json",
+                'content-type': "application/json"
+            }
+            response4 = requests.request("PATCH", url4, data=payload4, headers=headers4, params=querystring4)
+            jsonObj = json.loads(response4.text)
+            results4 = jsonObj['properties']
+print("done")
